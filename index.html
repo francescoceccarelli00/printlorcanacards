@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>Card Printer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f8f8f8;
+    }
+    header {
+      background: #222;
+      color: #fff;
+      padding: 10px;
+      text-align: center;
+    }
+    main {
+      display: flex;
+      height: calc(100vh - 50px);
+    }
+    .sidebar {
+      width: 300px;
+      background: #fff;
+      border-right: 1px solid #ccc;
+      padding: 10px;
+      overflow-y: auto;
+    }
+    .content {
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+    }
+    .controls {
+      margin-bottom: 10px;
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .card-item {
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+    }
+    .card-item img {
+      width: 100%;
+      display: block;
+    }
+    .card-item.selected {
+      border: 2px solid #007bff;
+    }
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 5px;
+      padding: 5px;
+      border: 1px solid #ccc;
+    }
+    .sidebar input {
+      width: 40px;
+    }
+    button {
+      background: #007bff;
+      color: #fff;
+      border: none;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Card Printer</h1>
+  </header>
+  <main>
+    <div class="sidebar">
+      <h3>Selezionate</h3>
+      <ul id="selectedList"></ul>
+      <button id="printBtn" disabled>Stampa PDF</button>
+    </div>
+    <div class="content">
+      <div class="controls">
+        <input type="text" id="search" placeholder="Cerca...">
+      </div>
+      <div class="card-grid" id="cardGrid"></div>
+    </div>
+  </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script>
+    const cardGrid = document.getElementById('cardGrid');
+    const selectedList = document.getElementById('selectedList');
+    const printBtn = document.getElementById('printBtn');
+    const searchInput = document.getElementById('search');
+
+    let allCards = [];
+    const selectedCards = new Map();
+
+    async function fetchCards() {
+      try {
+        const resp = await fetch('https://api.lorcast.com/v0/cards/search?q=e&unique=prints');
+        const data = await resp.json();
+        allCards = data.results.map(c => ({
+          id: c.id,
+          name: c.name,
+          image: c.image_uris?.digital?.normal || c.image_uris?.normal || '',
+        }));
+        renderCards(allCards);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderCards(cards) {
+      cardGrid.innerHTML = '';
+      cards.forEach(card => {
+        const div = document.createElement('div');
+        div.className = 'card-item';
+        div.dataset.id = card.id;
+        div.innerHTML = `<img src="${card.image}" alt="${card.name}">`;
+        if (selectedCards.has(card.id)) div.classList.add('selected');
+        div.addEventListener('click', () => toggleSelect(card));
+        cardGrid.appendChild(div);
+      });
+    }
+
+    function toggleSelect(card) {
+      if (selectedCards.has(card.id)) {
+        selectedCards.delete(card.id);
+      } else {
+        selectedCards.set(card.id, { ...card, qty: 1 });
+      }
+      renderSelected();
+      renderCards(allCards.filter(c => c.name.toLowerCase().includes(searchInput.value.toLowerCase())));
+    }
+
+    function renderSelected() {
+      selectedList.innerHTML = '';
+      selectedCards.forEach((card, id) => {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          ${card.name}
+          <input type="number" min="1" value="${card.qty}" style="margin:0 5px;">
+          <button>x</button>
+        `;
+        li.querySelector('input').addEventListener('change', e => {
+          card.qty = parseInt(e.target.value) || 1;
+        });
+        li.querySelector('button').addEventListener('click', () => {
+          selectedCards.delete(id);
+          renderSelected();
+          renderCards(allCards.filter(c => c.name.toLowerCase().includes(searchInput.value.toLowerCase())));
+        });
+        selectedList.appendChild(li);
+      });
+      printBtn.disabled = selectedCards.size === 0;
+    }
+
+    async function generatePDF() {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      let x = 10, y = 10;
+      const w = 60, h = 90;
+      for (let card of selectedCards.values()) {
+        for (let i = 0; i < card.qty; i++) {
+          const img = await toDataURL(card.image);
+          doc.addImage(img, 'JPEG', x, y, w, h);
+          x += w + 5;
+          if (x + w > 200) {
+            x = 10; y += h + 5;
+            if (y + h > 280) {
+              doc.addPage();
+              x = 10; y = 10;
+            }
+          }
+        }
+      }
+      doc.save('cards.pdf');
+    }
+
+    function toDataURL(url) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/jpeg'));
+        };
+        img.onerror = reject;
+        img.src = url;
+      });
+    }
+
+    printBtn.addEventListener('click', generatePDF);
+    searchInput.addEventListener('input', () => {
+      const term = searchInput.value.toLowerCase();
+      renderCards(allCards.filter(c => c.name.toLowerCase().includes(term)));
+    });
+
+    fetchCards();
+  </script>
+</body>
+</html>
